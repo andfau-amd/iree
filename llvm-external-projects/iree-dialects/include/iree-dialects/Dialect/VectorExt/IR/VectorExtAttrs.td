@@ -299,4 +299,36 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
 }
 
 
+//===---------------------------------------------------------------------===//
+// multi_reduction_index kind
+//===---------------------------------------------------------------------===//
+// Intended as a subset of CombiningKind from the Vector dialect, only covering
+// the cases needed by multi_reduction_index. The real CombiningKind is not used
+// here due to difficulties having VectorExt depend on a Vector attribute.
+
+def REDUCTION_WITH_INDEX_KIND_MINUI : I32BitEnumAttrCaseBit<"MINUI", 2, "minui">;
+def REDUCTION_WITH_INDEX_KIND_MINSI : I32BitEnumAttrCaseBit<"MINSI", 3, "minsi">;
+def REDUCTION_WITH_INDEX_KIND_MINNUMF : I32BitEnumAttrCaseBit<"MINNUMF", 4, "minnumf">;
+def REDUCTION_WITH_INDEX_KIND_MAXUI : I32BitEnumAttrCaseBit<"MAXUI", 5, "maxui">;
+def REDUCTION_WITH_INDEX_KIND_MAXSI : I32BitEnumAttrCaseBit<"MAXSI", 6, "maxsi">;
+def REDUCTION_WITH_INDEX_KIND_MAXNUMF : I32BitEnumAttrCaseBit<"MAXNUMF", 7, "maxnumf">;
+def REDUCTION_WITH_INDEX_KIND_MINIMUMF : I32BitEnumAttrCaseBit<"MINIMUMF", 11, "minimumf">;
+def REDUCTION_WITH_INDEX_KIND_MAXIMUMF : I32BitEnumAttrCaseBit<"MAXIMUMF", 12, "maximumf">;
+
+def ReductionWithIndexKind : I32BitEnumAttr<
+    "ReductionWithIndexKind",
+    "Subset of `CombiningKind` from the vector dialect that can be used for `multi_reduction_index`",
+    [REDUCTION_WITH_INDEX_KIND_MINUI,
+     REDUCTION_WITH_INDEX_KIND_MINSI, REDUCTION_WITH_INDEX_KIND_MINNUMF, REDUCTION_WITH_INDEX_KIND_MAXUI,
+     REDUCTION_WITH_INDEX_KIND_MAXSI, REDUCTION_WITH_INDEX_KIND_MAXNUMF,
+     REDUCTION_WITH_INDEX_KIND_MAXIMUMF, REDUCTION_WITH_INDEX_KIND_MINIMUMF]> {
+  let cppNamespace = "::mlir::iree_compiler::IREE::VectorExt";
+  let genSpecializedAttr = 0;
+}
+
+def ReductionWithIndexKindAttr : IREEVectorExt_EnumAttr<ReductionWithIndexKind, "kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+
 #endif // IREE_DIALECT_VECTOREXT_ATTRS
