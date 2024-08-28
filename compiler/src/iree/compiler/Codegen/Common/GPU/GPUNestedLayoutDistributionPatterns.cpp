@@ -514,8 +514,17 @@ struct DistributeMultiReduction final
       // Reduce across all reduction dimensions 1-by-1.
       for (unsigned i = 0; i < reductionMask.size(); ++i) {
         if (reductionMask[i]) {
-          extracted = doPackedThreadReductionOnDim(rewriter, layout, extracted,
-                                                   kind, i);
+          Location loc = val.getLoc();
+          int64_t offset = getShuffleOffset(layout, dim);
+          int64_t width = getShuffleWidth(layout, dim);
+          if (offset > UINT32_MAX || width > UINT32_MAX)
+            return failure();
+
+          // FIXME: need equivalent of mlir/lib/Dialect/GPU/Transforms/Utils.cpp
+          //        convertReductionKind() but in reverse
+          extracted = rewriter.create<gpu::SubgroupReduceOp>(
+              loc, extracted, kind, /*uniform=*/false, /*cluster_size=*/width,
+              /*cluster_stride=*/offset);
         }
       }
 
@@ -523,25 +532,6 @@ struct DistributeMultiReduction final
     }
 
     return res;
-  }
-
-  Value doPackedThreadReductionOnDim(RewriterBase &rewriter,
-                                     NestedLayoutAttr layout, Value val,
-                                     vector::CombiningKind kind,
-                                     int64_t dim) const {
-    Location loc = val.getLoc();
-    int64_t offset = getShuffleOffset(layout, dim);
-    int64_t width = getShuffleWidth(layout, dim);
-
-    for (int i = offset; i < offset * width; i <<= 1) {
-      auto shuffleOp = rewriter.create<gpu::ShuffleOp>(
-          loc, val, i, subgroupSize, gpu::ShuffleMode::XOR);
-      val =
-          makeArithReduction(rewriter, loc, kind, shuffleOp.getShuffleResult(),
-                             val, nullptr, nullptr);
-    }
-
-    return val;
   }
 
   int64_t subgroupSize;
