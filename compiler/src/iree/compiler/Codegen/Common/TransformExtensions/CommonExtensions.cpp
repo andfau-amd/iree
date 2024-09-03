@@ -1127,13 +1127,20 @@ transform_dialect::TestGpuVectorDistribution::applyToOne(
   populateGPUDistributeNestedLayoutAttrPatterns(patterns, laneId,
                                                 /*subgroupSize=*/64);
   populateGPUDistributeNestedLayoutContractAMDGPUPatterns(patterns);
-  populateGpuBreakDownSubgrupReducePatterns(patterns, 32);           // FIXME
-  populateGpuLowerSubgroupReduceToShufflePattenrs(patterns, 64, 32); // FIXME
   if (getExperimental())
     populateGPULayoutResolutionDistributionPatterns(patterns);
+  // FIXME
+  RewritePatternSet patterns2(target.getContext());
+  populateGpuBreakDownSubgrupReducePatterns(patterns2, 32);
+  populateGpuLowerSubgroupReduceToShufflePattenrs(patterns2, 64, 32);
+  FrozenRewritePatternSet patterns2f(std::move(patterns2));
   if (failed(distributeVectorOps(target, patterns, options))) {
     return emitDefaultDefiniteFailure(target);
   }
+
+  (void)applyPatternsAndFoldGreedily(*target.getCallableRegion(), patterns2f);
+  // FIXME
+
   return DiagnosedSilenceableFailure::success();
 }
 
