@@ -402,6 +402,9 @@ Value unpackToVector(Location loc, OpBuilder &builder, Value packedInput,
   return unpackedVector;
 }
 
+static gpu::AllReduceOperation
+combiningKindToAllReduce(vector::CombiningKind kind);
+
 /// Emit warp reduction code sequence for a given scalar input value.
 static Value warpReduction(Location loc, OpBuilder &builder, Value input,
                            vector::CombiningKind kind, uint32_t warpSize,
@@ -409,6 +412,21 @@ static Value warpReduction(Location loc, OpBuilder &builder, Value input,
   assert(llvm::isPowerOf2_32(numLaneToReduce));
   assert((llvm::isa<IntegerType, FloatType>(input.getType())) &&
          "Input must be a scalar");
+
+  Value laneVal = input;
+
+  auto gpuReduceKind = combiningKindToAllReduce(kind);
+  std::optional<uint32_t> clusterSize = std::nullopt;
+  if (warpSize != numLaneToReduce)
+    clusterSize = numLaneToReduce;
+  laneVal = builder.create<gpu::SubgroupReduceOp>(loc, laneVal, gpuReduceKind,
+                                                  /*uniform=*/false,
+                                                  /*clusterSize=*/clusterSize);
+
+  // Broadcast the result to all the lanes if necessary.
+  if (warpSize == numLaneToReduce)
+    return laneVal;
+
   IntegerType shuffleIntType = builder.getIntegerType(kShuffleBitWidth);
   Type origInputType = input.getType();
   const unsigned origBitWidth = origInputType.getIntOrFloatBitWidth();
@@ -417,46 +435,21 @@ static Value warpReduction(Location loc, OpBuilder &builder, Value input,
   const bool needsPacking = kShuffleBitWidth != origBitWidth;
   IntegerType equivIntType = builder.getIntegerType(origBitWidth);
 
-  // Always perform the shuffles over the supported scalar type. For inputs of
-  // smaller bitwidth, perform packing and unpacking via the supported integer
-  // type.
-  auto unpack = [loc, &builder, needsPacking, equivIntType,
-                 origInputType](Value packedVal) -> Value {
-    if (!needsPacking)
-      return packedVal;
-    auto asInt = builder.create<arith::TruncIOp>(loc, equivIntType, packedVal);
-    return builder.create<arith::BitcastOp>(loc, origInputType, asInt);
-  };
-
-  auto pack = [loc, &builder, needsPacking, equivIntType,
-               shuffleIntType](Value unpackedVal) -> Value {
-    if (!needsPacking)
-      return unpackedVal;
-    auto asInt =
-        builder.create<arith::BitcastOp>(loc, equivIntType, unpackedVal);
-    return builder.create<arith::ExtUIOp>(loc, shuffleIntType, asInt);
-  };
-
-  // Lane value always stays in the original type. We use it to perform arith
-  // reductions.
-  Value laneVal = input;
-  // Parallel reduction using butterfly shuffles.
-  for (uint64_t i = 1; i < numLaneToReduce; i <<= 1) {
-    Value shuffled = builder
-                         .create<gpu::ShuffleOp>(loc, pack(laneVal), i,
-                                                 /*width=*/warpSize,
-                                                 /*mode=*/gpu::ShuffleMode::XOR)
-                         .getShuffleResult();
-    laneVal = makeArithReduction(builder, loc, kind, laneVal, unpack(shuffled));
+  // Shuffles need to use a supported scalar type. Pack and unpack if needed.
+  if (needsPacking) {
+    laneVal = builder.create<arith::BitcastOp>(loc, equivIntType, laneVal);
+    laneVal = builder.create<arith::ExtUIOp>(loc, shuffleIntType, laneVal);
   }
-  // Broadcast the result to all the lanes.
-  if (warpSize != numLaneToReduce) {
-    Value shuffled = builder
-                         .create<gpu::ShuffleOp>(loc, pack(laneVal), 0,
-                                                 /*width=*/warpSize,
-                                                 /*mode=*/gpu::ShuffleMode::IDX)
-                         .getShuffleResult();
-    laneVal = unpack(shuffled);
+
+  laneVal = builder
+                .create<gpu::ShuffleOp>(loc, laneVal, 0,
+                                        /*width=*/warpSize,
+                                        /*mode=*/gpu::ShuffleMode::IDX)
+                .getShuffleResult();
+
+  if (needsPacking) {
+    laneVal = builder.create<arith::TruncIOp>(loc, equivIntType, laneVal);
+    laneVal = builder.create<arith::BitcastOp>(loc, origInputType, laneVal);
   }
 
   return laneVal;
@@ -552,22 +545,11 @@ combiningKindToAllReduce(vector::CombiningKind kind) {
 /// Emit reduction across a group for a given input.
 Value emitGPUGroupReduction(Location loc, OpBuilder &builder, Value input,
                             vector::CombiningKind kind, uint32_t size,
-                            int warpSize, bool expandSubgroupReduce) {
+                            int warpSize, bool /* FIXME */) {
   assert(
       size % warpSize == 0 &&
       "Group reduction only support for sizes aligned on warp size for now.");
 
-  if (!expandSubgroupReduce && size == warpSize) {
-    auto gpuReduceKind = combiningKindToAllReduce(kind);
-    // Simple case -- emit `gpu.subgroup_reduce` directly.
-    Value laneVal = builder.create<vector::ReductionOp>(loc, kind, input);
-    return builder.create<gpu::SubgroupReduceOp>(loc, laneVal, gpuReduceKind,
-                                                 /*uniform=*/false);
-  }
-
-  // More-involved case -- generate `gpu.shuffle` ops over i32 values (using the
-  // butterfly shuffle algorithm).
-  //
   // First reduce on a single thread to get per lane reduction value.
   Value laneVal = builder.create<vector::ReductionOp>(loc, kind, input);
   laneVal = warpReduction(loc, builder, laneVal, kind, warpSize, warpSize);
